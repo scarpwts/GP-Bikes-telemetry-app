@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-GP Bikes Telemetry Viewer
+GP Bikes CSV Telemetry Viewer Pro
+Interfaccia professionale per analisi telemetria GP Bikes
 """
 
 import sys
@@ -9,12 +10,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
-from functools import partial
 import traceback
 
 
@@ -64,14 +63,14 @@ QLineEdit {
 }
 QLineEdit:focus { border-color: #ff6b00; }
 
-QListWidget {
+QTreeWidget {
     background-color: #222;
     border: 1px solid #3a3a3a;
     border-radius: 3px;
     outline: none;
 }
-QListWidget::item { padding: 3px 8px; border-bottom: 1px solid #2a2a2a; }
-QListWidget::item:selected { background-color: #ff6b00; color: white; }
+QTreeWidget::item { padding: 3px 8px; border-bottom: 1px solid #2a2a2a; }
+QTreeWidget::item:selected { background-color: #ff6b00; color: white; }
 
 QComboBox {
     background-color: #2d2d2d;
@@ -119,6 +118,10 @@ QGroupBox::title {
     left: 10px;
     padding: 0 6px;
 }
+
+QCheckBox {
+    color: #c0c0c0;
+}
 """
 
 
@@ -131,8 +134,13 @@ def read_gpbikes_csv(file_path):
         try:
             df = pd.read_csv(file_path, skiprows=skip, encoding='latin1')
             if len(df) > 10 and any(df.dtypes.apply(lambda x: x in ['float64', 'int64'])):
-                # Rimuovi colonne/vuote duplicate
                 df = df.loc[:, ~df.columns.duplicated()]
+                # Converti colonne numeriche
+                for col in df.columns:
+                    try:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    except:
+                        pass
                 return df
         except:
             continue
@@ -142,6 +150,11 @@ def read_gpbikes_csv(file_path):
         df = pd.read_csv(file_path, engine='python', encoding='latin1')
         if len(df) > 10:
             df = df.loc[:, ~df.columns.duplicated()]
+            for col in df.columns:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except:
+                    pass
             return df
     except:
         pass
@@ -164,20 +177,23 @@ def read_gpbikes_csv(file_path):
     df = pd.read_csv(temp_path, encoding='latin1')
     os.remove(temp_path)
     df = df.loc[:, ~df.columns.duplicated()]
+    for col in df.columns:
+        try:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        except:
+            pass
     return df
 
 
 # ========== VARIABLE CATEGORIES ==========
 VARIABLE_CATEGORIES = {
-    "Speed/Distance": ["Speed", "Distance", "GPS_Speed", "GPS_LatAcc", "GPS_LonAcc", "PosX", "PosY"],
-    "Engine": ["Engine", "RPM", "EngineSpeed", "Gear", "CylHeadTemp", "WaterTemp", "OilTemp", "OilPress"],
-    "Throttle/Brake": ["Throttle", "InputThrottle", "FrontBrake", "RearBrake", "BrakePressFront", "BrakePressRear"],
-    "Suspension": ["FrontSusp", "RearSusp", "FrontSuspVel", "RearSuspVel", "SuspPotFront", "SuspPotRear"],
-    "Wheels": ["FrontWheel", "RearWheel", "WheelSpeedFL", "WheelSpeedFR", "WheelSpeedRL", "WheelSpeedRR"],
-    "Acceleration": ["LatAcc", "LonAcc", "VertAcc", "CombinedAcc", "YawVel", "RollVel", "PitchVel"],
-    "Steering": ["Steer", "SteeringAngle", "SteerTorque", "SteerDamper"],
-    "Driver": ["Clutch", "InputSteer", "InputThrottle", "InputBrake", "InputClutch"],
-    "Position": ["PosX", "PosY", "PosZ", "Latitude", "Longitude", "Altitude"],
+    "Speed/Distance": ["Speed", "Distance", "PosX", "PosY", "LatAcc", "LonAcc"],
+    "Engine": ["Engine", "CylHeadTemp", "WaterTemp", "Gear"],
+    "Throttle/Brake": ["Throttle", "InputThrottle", "FrontBrake", "RearBrake"],
+    "Suspension": ["FrontSusp", "RearSusp"],
+    "Wheels": ["FrontWheel", "RearWheel"],
+    "Steering": ["Steer", "YawVel"],
+    "Controls": ["Clutch"],
 }
 
 def categorize_variable(var_name):
@@ -192,9 +208,9 @@ def categorize_variable(var_name):
 
 # ========== TELEMETRY PLOT WIDGET ==========
 class TelemetryPlot(FigureCanvas):
-    """Single telemetry graph"""
+    """Single telemetry graph widget"""
     
-    def __init__(self, parent=None, title="", ylabel="", color='#ff6b00'):
+    def __init__(self, parent=None, title="", ylabel=""):
         self.fig = Figure(figsize=(12, 2.5), dpi=100, facecolor='#1a1a1a')
         super().__init__(self.fig)
         self.setParent(parent)
@@ -212,28 +228,33 @@ class TelemetryPlot(FigureCanvas):
         self.ax.spines['left'].set_color('#444')
         
         self.lines = []
-        self.cursor_lines = []
-        self.cursor_texts = []
-        self.color = color
+        self.cursor_line = None
+        self.cursor_text = None
         self.stat_text = None
         
         self.fig.tight_layout(pad=0.5)
         self.mpl_connect('motion_notify_event', self.on_mouse_move)
     
-    def plot(self, x, y, name, color=None):
-        if color is None:
-            color = self.color
-        line, = self.ax.plot(x, y, color=color, linewidth=1.2, alpha=0.9)
-        self.lines.append({'line': line, 'name': name, 'x': x.values, 'y': y.values})
-        self._update_stats(x.values, y.values, name)
+    def plot(self, x, y, name, color):
+        # Remove NaN values
+        valid_mask = ~np.isnan(y)
+        if valid_mask.sum() < 2:
+            return
+        
+        x_clean = x[valid_mask]
+        y_clean = y[valid_mask]
+        
+        line, = self.ax.plot(x_clean, y_clean, color=color, linewidth=1.2, alpha=0.9)
+        self.lines.append({'line': line, 'name': name, 'x': x_clean, 'y': y_clean})
+        self._update_stats(y_clean)
         self.fig.tight_layout(pad=0.5)
         self.draw()
     
     def clear(self):
         self.ax.clear()
         self.lines = []
-        self.cursor_lines = []
-        self.cursor_texts = []
+        self.cursor_line = None
+        self.cursor_text = None
         self.stat_text = None
         self.ax.grid(True, alpha=0.2, color='#444', linewidth=0.5)
         self.ax.tick_params(colors='#666', labelsize=8)
@@ -242,82 +263,44 @@ class TelemetryPlot(FigureCanvas):
         self.ax.spines['bottom'].set_color('#444')
         self.ax.spines['left'].set_color('#444')
     
-    def _update_stats(self, x, y, name):
-        """Mostra min/max/avg"""
+    def _update_stats(self, y):
+        """Mostra statistiche min/max/avg"""
         if self.stat_text:
             self.stat_text.remove()
-        valid_y = y[~np.isnan(y)]
-        if len(valid_y) > 0:
-            y_min, y_max = np.min(valid_y), np.max(valid_y)
-            y_avg = np.mean(valid_y)
+        if len(y) > 0:
+            y_min, y_max = np.min(y), np.max(y)
+            y_avg = np.mean(y)
             text = f"Min:{y_min:.1f}  Avg:{y_avg:.1f}  Max:{y_max:.1f}"
             self.stat_text = self.ax.text(0.99, 0.01, text, transform=self.ax.transAxes,
                                          fontsize=7, color='#666', ha='right', va='bottom')
     
     def on_mouse_move(self, event):
-        # Rimuovi cursori precedenti
-        for cl in self.cursor_lines:
-            cl.remove()
-        for ct in self.cursor_texts:
-            ct.remove()
-        self.cursor_lines.clear()
-        self.cursor_texts.clear()
+        if self.cursor_line:
+            self.cursor_line.remove()
+            self.cursor_line = None
+        if self.cursor_text:
+            self.cursor_text.remove()
+            self.cursor_text = None
         
         if event.inaxes != self.ax or event.xdata is None:
             self.draw()
             return
         
         x = event.xdata
-        self.cursor_lines.append(self.ax.axvline(x=x, color='#ff6b00', linestyle='-', 
-                                                   alpha=0.6, linewidth=1))
+        self.cursor_line = self.ax.axvline(x=x, color='#ff6b00', linestyle='-', 
+                                            alpha=0.6, linewidth=1)
         
-        text = f"Time: {x:.3f}s"
+        text = f"X: {x:.3f}"
         for item in self.lines:
             idx = np.argmin(np.abs(item['x'] - x))
             if idx < len(item['y']):
                 val = item['y'][idx]
                 text += f"\n{item['name']}: {val:.2f}"
         
-        ct = self.ax.text(0.02, 0.98, text, transform=self.ax.transAxes,
+        self.cursor_text = self.ax.text(0.02, 0.98, text, transform=self.ax.transAxes,
                          fontsize=8, color='#c0c0c0', va='top',
                          bbox=dict(boxstyle='round,pad=0.5', facecolor='#1a1a1a', 
                                  edgecolor='#444', alpha=0.9))
-        self.cursor_texts.append(ct)
-        self.draw()
-
-
-# ========== TRACK MAP WIDGET ==========
-class TrackMapWidget(FigureCanvas):
-    """Mini track map widget"""
-    
-    def __init__(self, parent=None):
-        self.fig = Figure(figsize=(3, 3), dpi=100, facecolor='#1a1a1a')
-        super().__init__(self.fig)
-        self.setParent(parent)
-        self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor('#1e1e1e')
-        self.ax.set_aspect('equal')
-        self.ax.tick_params(colors='#444', labelsize=7)
-        self.ax.set_title("Track Map", color='#888', fontsize=9)
-        self.track_line = None
-        self.pos_marker = None
-        self.fig.tight_layout(pad=0.5)
-    
-    def plot_track(self, pos_x, pos_y):
-        self.ax.clear()
-        self.ax.set_facecolor('#1e1e1e')
-        self.track_line, = self.ax.plot(pos_x, pos_y, color='#444', linewidth=1.5, alpha=0.7)
-        self.ax.set_aspect('equal')
-        self.ax.set_title("Track Map", color='#888', fontsize=9)
-        self.ax.tick_params(colors='#444', labelsize=7)
-        self.fig.tight_layout(pad=0.5)
-        self.draw()
-    
-    def update_position(self, pos_x, pos_y):
-        if self.pos_marker:
-            self.pos_marker.remove()
-        self.pos_marker, = self.ax.plot([pos_x], [pos_y], 'o', color='#ff6b00', 
-                                         markersize=8, zorder=5)
         self.draw()
 
 
@@ -332,7 +315,6 @@ class TelemetryViewerPro(QMainWindow):
         self.dist_col = None
         self.beacon_markers = []
         self.plots = []
-        self.lap_combo_items = []
         self.color_palette = [
             '#ff6b00', '#00ff88', '#ff4444', '#4488ff', '#ff8844',
             '#ff44ff', '#ffff44', '#44ffff', '#ff8800', '#88ff00',
@@ -342,7 +324,7 @@ class TelemetryViewerPro(QMainWindow):
         self.initUI()
     
     def initUI(self):
-        self.setWindowTitle("GP Bikes Telemetry Viewer")
+        self.setWindowTitle("GP Bikes Telemetry Pro")
         self.setGeometry(50, 50, 1600, 900)
         self.setStyleSheet(DARK_STYLE)
         
@@ -362,7 +344,7 @@ class TelemetryViewerPro(QMainWindow):
         content_layout.setContentsMargins(4, 4, 4, 4)
         content_layout.setSpacing(4)
         
-        # ========== LEFT PANEL (Variable Browser) ==========
+        # ========== LEFT PANEL ==========
         left_panel = QWidget()
         left_panel.setFixedWidth(260)
         left_layout = QVBoxLayout(left_panel)
@@ -376,25 +358,11 @@ class TelemetryViewerPro(QMainWindow):
         left_layout.addWidget(self.file_label)
         
         # Lap selector
-        lap_group = QGroupBox("Lap Selection")
+        lap_group = QGroupBox("Lap / Session")
         lap_layout = QVBoxLayout(lap_group)
         self.lap_combo = QComboBox()
         self.lap_combo.currentIndexChanged.connect(self.on_lap_changed)
         lap_layout.addWidget(self.lap_combo)
-        
-        lap_btn_layout = QHBoxLayout()
-        self.prev_lap_btn = QPushButton("◀")
-        self.next_lap_btn = QPushButton("▶")
-        self.prev_lap_btn.clicked.connect(lambda: self.lap_combo.setCurrentIndex(
-            max(0, self.lap_combo.currentIndex() - 1)))
-        self.next_lap_btn.clicked.connect(lambda: self.lap_combo.setCurrentIndex(
-            min(self.lap_combo.count() - 1, self.lap_combo.currentIndex() + 1)))
-        self.prev_lap_btn.setFixedWidth(30)
-        self.next_lap_btn.setFixedWidth(30)
-        lap_btn_layout.addWidget(self.prev_lap_btn)
-        lap_btn_layout.addWidget(self.next_lap_btn)
-        lap_btn_layout.addStretch()
-        lap_layout.addLayout(lap_btn_layout)
         
         self.lap_info_label = QLabel("--")
         self.lap_info_label.setStyleSheet("color: #ff6b00; font-size: 11px;")
@@ -404,11 +372,11 @@ class TelemetryViewerPro(QMainWindow):
         
         # Variable search
         self.var_search = QLineEdit()
-        self.var_search.setPlaceholderText("🔍 Search variables...")
+        self.var_search.setPlaceholderText("Search variables...")
         self.var_search.textChanged.connect(self.filter_variables)
         left_layout.addWidget(self.var_search)
         
-        # Variable tree (categorized)
+        # Variable tree
         self.var_tree = QTreeWidget()
         self.var_tree.setHeaderHidden(True)
         self.var_tree.setSelectionMode(QAbstractItemView.MultiSelection)
@@ -429,12 +397,12 @@ class TelemetryViewerPro(QMainWindow):
         
         left_layout.addStretch()
         
-        # ========== RIGHT PANEL (Graphs) ==========
+        # ========== RIGHT PANEL ==========
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Graph area with scroll
+        # Graph area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_widget = QWidget()
@@ -444,8 +412,8 @@ class TelemetryViewerPro(QMainWindow):
         self.scroll_area.setWidget(self.scroll_widget)
         right_layout.addWidget(self.scroll_area)
         
-        # Status bar
-        self.position_label = QLabel("  Time: -- | Ready")
+        # Status bar info
+        self.position_label = QLabel("  Ready")
         self.position_label.setStyleSheet("color: #666; font-size: 10px; background: #222; padding: 4px;")
         right_layout.addWidget(self.position_label)
         
@@ -470,7 +438,7 @@ class TelemetryViewerPro(QMainWindow):
         self.addToolBar(toolbar)
         
         # Load button
-        load_action = QAction("📂 Open", self)
+        load_action = QAction("Open CSV", self)
         load_action.triggered.connect(self.load_file)
         toolbar.addAction(load_action)
         
@@ -485,18 +453,10 @@ class TelemetryViewerPro(QMainWindow):
         
         toolbar.addSeparator()
         
-        # Overlay laps
-        self.overlay_check = QCheckBox("Overlay Laps")
-        self.overlay_check.setStyleSheet("color: #c0c0c0;")
-        self.overlay_check.stateChanged.connect(self.update_plots)
-        toolbar.addWidget(self.overlay_check)
-        
-        toolbar.addSeparator()
-        
         # Zoom controls
-        zoom_fit = QPushButton("Fit")
+        zoom_fit = QPushButton("Fit All")
         zoom_fit.clicked.connect(self.zoom_fit)
-        zoom_fit.setFixedWidth(40)
+        zoom_fit.setFixedWidth(60)
         toolbar.addWidget(zoom_fit)
     
     # ========================================================================
@@ -522,22 +482,22 @@ class TelemetryViewerPro(QMainWindow):
             # Detect distance column
             self.dist_col = self._detect_column(['Distance', 'distance', 'Dist', 'dist', 'LapDistance'])
             
-            # Extract header info (CSV metadata)
+            # Parse header for beacon markers
             self._parse_csv_header(file_path)
             
             # Update file label
             basename = os.path.basename(file_path)
             num_rows = len(self.current_data)
             num_cols = len(self.current_data.columns)
-            self.file_label.setText(f"📁 {basename}\n{num_rows:,} rows × {num_cols} cols")
+            self.file_label.setText(f"File: {basename}\n{num_rows:,} rows x {num_cols} cols")
             
             # Populate variables
             self.populate_variable_tree()
             
-            # Detect laps
-            self.detect_laps()
+            # Detect laps (semplificato)
+            self.detect_laps_simple()
             
-            self.statusBar().showMessage(f"✅ Loaded: {basename}")
+            self.statusBar().showMessage(f"Loaded: {basename}")
         
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load file:\n{str(e)}")
@@ -560,7 +520,14 @@ class TelemetryViewerPro(QMainWindow):
                 for line in header_lines:
                     if 'Beacon Marker' in line or 'Beacon' in line:
                         parts = line.split(',')
-                        self.beacon_markers = [float(p.strip('"')) for p in parts[1:] if p.strip('"').replace('.','').isdigit()]
+                        self.beacon_markers = []
+                        for p in parts[1:]:
+                            try:
+                                val = float(p.strip('"'))
+                                if not np.isnan(val):
+                                    self.beacon_markers.append(val)
+                            except:
+                                pass
         except:
             self.beacon_markers = []
     
@@ -576,17 +543,18 @@ class TelemetryViewerPro(QMainWindow):
         for col in self.current_data.columns:
             try:
                 data = pd.to_numeric(self.current_data[col], errors='coerce')
-                if data.notna().sum() > 10 and data.max() > 1:
+                valid_data = data.dropna()
+                if len(valid_data) > 10 and valid_data.max() > 1:
                     return col
             except:
                 pass
         return None
     
     # ========================================================================
-    # LAP DETECTION
+    # LAP DETECTION - SEMPLIFICATA
     # ========================================================================
-    def detect_laps(self):
-        """Advanced lap detection with multiple methods"""
+    def detect_laps_simple(self):
+        """Rilevamento giri semplificato basato su distanza o sessione intera"""
         self.laps = []
         
         if self.current_data is None:
@@ -594,54 +562,61 @@ class TelemetryViewerPro(QMainWindow):
         
         df = self.current_data
         
-        # Method 1: Distance-based detection
+        # Prova a rilevare giri dalla colonna distanza
+        found_laps = False
         if self.dist_col and self.dist_col in df.columns:
-            dist = pd.to_numeric(df[self.dist_col], errors='coerce')
-            # Find distance resets (lap boundaries)
-            dist_diff = dist.diff()
-            lap_starts = [0] + list(dist_diff[dist_diff < -1].index)
-            
-            if len(lap_starts) > 1:
-                for i, start in enumerate(lap_starts):
-                    end = lap_starts[i + 1] if i + 1 < len(lap_starts) else len(df)
-                    lap_data = df.iloc[start:end].copy()
-                    if len(lap_data) > 20:
-                        self._add_lap(lap_data, i + 1)
-                if self.laps:
-                    self._update_lap_combo()
-                    return
+            try:
+                dist = pd.to_numeric(df[self.dist_col], errors='coerce')
+                # Rimuovi NaN
+                dist_clean = dist.dropna()
+                if len(dist_clean) > 20:
+                    # Trova reset della distanza (calo improvviso > 1 metro)
+                    dist_diff = dist_clean.diff()
+                    lap_boundaries = dist_diff[dist_diff < -1].index.tolist()
+                    
+                    if lap_boundaries:
+                        # Aggiungi inizio e fine
+                        boundaries = [dist_clean.index[0]] + lap_boundaries + [dist_clean.index[-1]]
+                        
+                        for i in range(len(boundaries) - 1):
+                            start_idx = boundaries[i]
+                            end_idx = boundaries[i + 1]
+                            lap_data = df.iloc[start_idx:end_idx].copy()
+                            if len(lap_data) > 20:
+                                self._add_lap_safe(lap_data, i + 1)
+                        
+                        if self.laps:
+                            found_laps = True
+            except Exception as e:
+                print(f"Distance lap detection failed: {e}")
         
-        # Method 2: Time-based (estimate ~110s laps)
-        if self.time_col and self.time_col in df.columns:
-            time_data = pd.to_numeric(df[self.time_col], errors='coerce')
-            total_time = time_data.iloc[-1] - time_data.iloc[0]
-            est_lap_time = 110  # seconds
-            num_laps = max(1, int(total_time / est_lap_time))
-            samples_per_lap = len(df) // num_laps
-            
-            for i in range(num_laps):
-                start = i * samples_per_lap
-                end = (i + 1) * samples_per_lap if i + 1 < num_laps else len(df)
-                lap_data = df.iloc[start:end].copy()
-                if len(lap_data) > 20:
-                    self._add_lap(lap_data, i + 1)
-            if self.laps:
-                self._update_lap_combo()
-                return
+        # Se non trovati giri, mostra l'intera sessione come unico "giro"
+        if not found_laps:
+            self._add_lap_safe(df.copy(), 1)
         
-        # Method 3: Single lap
-        if len(df) > 20:
-            self._add_lap(df.copy(), 1)
-            self._update_lap_combo()
+        self._update_lap_combo()
     
-    def _add_lap(self, lap_data, lap_num):
-        """Add a lap with time calculation"""
-        if self.time_col and self.time_col in lap_data.columns:
-            time_data = pd.to_numeric(lap_data[self.time_col], errors='coerce')
-            lap_time = time_data.iloc[-1] - time_data.iloc[0]
-        else:
-            lap_time = len(lap_data) * 0.05  # assume 20Hz
+    def _add_lap_safe(self, lap_data, lap_num):
+        """Aggiunge un giro con calcolo tempo sicuro"""
+        # Calcola tempo del giro
+        lap_time = 0.0
         
+        if self.time_col and self.time_col in lap_data.columns:
+            try:
+                time_data = pd.to_numeric(lap_data[self.time_col], errors='coerce')
+                time_clean = time_data.dropna()
+                if len(time_clean) > 1:
+                    calculated_time = time_clean.iloc[-1] - time_clean.iloc[0]
+                    if not np.isnan(calculated_time) and calculated_time > 0:
+                        lap_time = calculated_time
+            except:
+                pass
+        
+        # Se non disponibile, stima basata su sample rate (20Hz = 0.05s per sample)
+        if lap_time <= 0:
+            lap_time = len(lap_data) * 0.05
+        
+        # Formatta tempo
         minutes = int(lap_time // 60)
         seconds = lap_time % 60
         
@@ -658,7 +633,8 @@ class TelemetryViewerPro(QMainWindow):
         self.lap_combo.clear()
         for lap in self.laps:
             self.lap_combo.addItem(f"Lap {lap['num']} - {lap['time_str']} ({lap['samples']} pts)")
-        self.lap_combo.setCurrentIndex(len(self.laps) - 1)  # Select last lap
+        if self.laps:
+            self.lap_combo.setCurrentIndex(0)
         self.lap_combo.blockSignals(False)
         self.on_lap_changed(self.lap_combo.currentIndex())
     
@@ -697,7 +673,7 @@ class TelemetryViewerPro(QMainWindow):
         
         # Sort categories
         preferred_order = ["Speed/Distance", "Engine", "Throttle/Brake", "Suspension", 
-                          "Wheels", "Acceleration", "Steering", "Driver", "Position", "Other"]
+                          "Wheels", "Steering", "Controls", "Other"]
         
         for cat in preferred_order:
             if cat in categories:
@@ -768,11 +744,15 @@ class TelemetryViewerPro(QMainWindow):
                 widget.deleteLater()
         
         if self.current_lap_data is None:
+            label = QLabel("Select variables from the left panel")
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet("color: #666; padding: 40px; font-size: 14px;")
+            self.scroll_layout.addWidget(label)
             return
         
         selected_vars = self.get_selected_variables()
         if not selected_vars:
-            label = QLabel("Select variables from the left panel to display telemetry data")
+            label = QLabel("Select variables from the left panel")
             label.setAlignment(Qt.AlignCenter)
             label.setStyleSheet("color: #666; padding: 40px; font-size: 14px;")
             self.scroll_layout.addWidget(label)
@@ -786,12 +766,16 @@ class TelemetryViewerPro(QMainWindow):
             if var not in self.current_lap_data.columns:
                 continue
             
-            data = pd.to_numeric(self.current_lap_data[var], errors='coerce')
-            if data.notna().sum() < 5:
+            try:
+                data = pd.to_numeric(self.current_lap_data[var], errors='coerce').values
+            except:
+                continue
+            
+            if np.sum(~np.isnan(data)) < 5:
                 continue
             
             color = self.color_palette[i % len(self.color_palette)]
-            plot = TelemetryPlot(self.scroll_widget, title=var, ylabel=var, color=color)
+            plot = TelemetryPlot(self.scroll_widget, title=var, ylabel=var)
             plot.plot(x_data, data, var, color)
             self.plots.append(plot)
             self.scroll_layout.addWidget(plot)
@@ -800,28 +784,55 @@ class TelemetryViewerPro(QMainWindow):
         if self.beacon_markers:
             for plot in self.plots:
                 for bm in self.beacon_markers:
-                    plot.ax.axvline(x=bm, color='#ffff00', linestyle='--', 
-                                  alpha=0.3, linewidth=0.5)
+                    if not np.isnan(bm):
+                        plot.ax.axvline(x=bm, color='#ffff00', linestyle='--', 
+                                      alpha=0.3, linewidth=0.5)
         
         self.scroll_layout.addStretch()
     
     def _get_x_axis_data(self, lap_data):
         """Get X-axis data based on current mode"""
+        # Distance mode
         if self.xaxis_combo.currentText() == "Distance (m)" and self.dist_col:
             try:
-                dist = pd.to_numeric(lap_data[self.dist_col], errors='coerce')
-                # Make distance monotonic increasing
-                dist = dist - dist.iloc[0]
-                dist[dist < 0] = np.nan
-                dist = dist.fillna(method='ffill')
+                dist = pd.to_numeric(lap_data[self.dist_col], errors='coerce').values
+                # Normalize distance starting from 0
+                first_valid = dist[~np.isnan(dist)]
+                if len(first_valid) > 0:
+                    dist = dist - first_valid[0]
+                # Forward fill NaN
+                mask = np.isnan(dist)
+                if mask.any():
+                    idx = np.where(~mask, np.arange(len(dist)), 0)
+                    np.maximum.accumulate(idx, out=idx)
+                    dist = dist[idx]
+                # Fill remaining NaN with 0
+                dist = np.nan_to_num(dist, nan=0.0)
                 return dist, "Distance (m)"
             except:
                 pass
         
+        # Time mode (default)
         if self.time_col and self.time_col in lap_data.columns:
-            time_data = pd.to_numeric(lap_data[self.time_col], errors='coerce')
-            return time_data - time_data.iloc[0], "Time (s)"
+            try:
+                time_data = pd.to_numeric(lap_data[self.time_col], errors='coerce').values
+                # Normalize starting from 0
+                first_valid = time_data[~np.isnan(time_data)]
+                if len(first_valid) > 0:
+                    time_data = time_data - first_valid[0]
+                # Forward fill NaN
+                mask = np.isnan(time_data)
+                if mask.any():
+                    idx = np.where(~mask, np.arange(len(time_data)), 0)
+                    np.maximum.accumulate(idx, out=idx)
+                    time_data = time_data[idx]
+                # Fill remaining NaN with 0
+                time_data = np.nan_to_num(time_data, nan=0.0)
+                return time_data, "Time (s)"
+            except:
+                pass
         
+        # Fallback: index-based
         return np.arange(len(lap_data)) * 0.05, "Time (s)"
     
     def zoom_fit(self):
